@@ -1,0 +1,173 @@
+<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Festival In/Out Scanner</title>
+  <style>
+    body { 
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; 
+      margin: 16px;
+      max-width: 600px;
+    }
+    h2 { margin: 0 0 10px 0; }
+    #reader { width: 100%; max-width: 520px; }
+    #statusBox { 
+      margin-top: 12px; 
+      padding: 12px; 
+      border-radius: 10px; 
+      font-size: 20px; 
+    }
+    .ok { border: 2px solid #2ecc71; background: #d4edda; }
+    .err { border: 2px solid #e74c3c; background: #f8d7da; }
+    .muted { color: #666; font-size: 14px; margin-top: 10px; }
+    #last { margin-top: 10px; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <h2>Festival In/Out Scanner</h2>
+
+  <div id="reader"></div>
+
+  <div id="statusBox" class="muted">
+    Point the camera at a QR code (e.g. CIRQUE|1)…
+  </div>
+
+  <div id="last" class="muted"></div>
+
+  <script src="https://unpkg.com/html5-qrcode"></script>
+
+  <script>
+    const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxI5tN4-vVynO0aVHhkC65nTq8ExbjqdT3s7XYA2SmOXIo5Z2OGTDhX1IpGdjZ2WTAy/exec';
+
+    const statusBox = document.getElementById("statusBox");
+    const lastBox = document.getElementById("last");
+
+    let lastScan = { key: null, t: 0 };
+
+    function setStatus(msg, ok) {
+      statusBox.textContent = msg;
+      statusBox.className = ok ? "ok" : "err";
+    }
+    
+    function setLast(msg) { 
+      lastBox.textContent = msg || ""; 
+    }
+
+    function isNumeric(text) {
+      return /^[0-9]+$/.test(String(text).trim());
+    }
+
+    function parsePayload(decodedText) {
+      const raw = String(decodedText).trim();
+
+      // Preferred: COMPANY|ID
+      const parts = raw.split("|");
+      if (parts.length === 2) {
+        const company = parts[0].trim().toUpperCase();
+        const id = parts[1].trim();
+        if (company && isNumeric(id)) {
+          return { company, id, key: company + "|" + id };
+        }
+      }
+
+      // Optional fallback: just numeric ID
+      if (isNumeric(raw)) {
+        return { company: "", id: raw, key: raw };
+      }
+
+      return null;
+    }
+
+    async function toggleOnServer(company, id) {
+      const response = await fetch(SCRIPT_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ company, id })
+      });
+
+      if (!response.ok) {
+        throw new Error('Server returned ' + response.status);
+      }
+
+      return await response.json();
+    }
+
+    const scanner = new Html5Qrcode("reader");
+    const config = { 
+      fps: 12, 
+      qrbox: { width: 280, height: 280 }, 
+      rememberLastUsedCamera: true 
+    };
+
+    async function start() {
+      try {
+        const cameras = await Html5Qrcode.getCameras();
+        if (!cameras || cameras.length === 0) {
+          setStatus("No camera found on this device.", false);
+          return;
+        }
+
+        const preferred =
+          cameras.find(c => /back|rear|environment/i.test(c.label))?.id
+          ?? cameras[0].id;
+
+        await scanner.start(
+          preferred,
+          config,
+          async (decodedText) => {
+            const parsed = parsePayload(decodedText);
+            if (!parsed) return;
+
+            const now = Date.now();
+            if (lastScan.key === parsed.key && (now - lastScan.t) < 2000) {
+              return; // Debounce
+            }
+            lastScan = { key: parsed.key, t: now };
+
+            if (!parsed.company) {
+              setStatus("QR must be COMPANY|ID (e.g. CIRQUE|1)", false);
+              return;
+            }
+
+            try {
+              setStatus("Scanning " + parsed.company + " ID " + parsed.id + "…", true);
+              setLast("");
+
+              const result = await toggleOnServer(parsed.company, parsed.id);
+
+              if (result && result.ok) {
+                const who = result.name ? (" (" + result.name + ")") : "";
+                setStatus(
+                  result.company + " ID " + result.id + who + ": " + 
+                  result.status + " ✅", 
+                  true
+                );
+                setLast(
+                  "Sheet: " + result.sheet + 
+                  " • Row: " + result.row + 
+                  " • " + new Date().toLocaleTimeString()
+                );
+              } else {
+                setStatus(
+                  parsed.company + " ID " + parsed.id + ": " + 
+                  (result && result.error ? result.error : "Unknown error"), 
+                  false
+                );
+              }
+            } catch (e) {
+              setStatus("Error: " + e.message, false);
+            }
+          },
+          () => {} // Decode error callback (ignore)
+        );
+      } catch (e) {
+        setStatus("Camera start failed: " + e.message, false);
+      }
+    }
+
+    start();
+  </script>
+</body>
+</html>
