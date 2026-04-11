@@ -81,9 +81,10 @@
 
     async function toggleOnServer(company, id) {
       const response = await fetch(SCRIPT_URL, {
+        redirect: "follow",
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': 'text/plain;charset=utf-8',
         },
         body: JSON.stringify({ company, id })
       });
